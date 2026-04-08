@@ -16,6 +16,7 @@ from torchvision.datasets import (CIFAR10, CIFAR100, DTD, GTSRB, MNIST, PCAM,
 from . import (babel_imagenet, caltech101, flickr, imagenetv2, objectnet,
                sugar_crepe, voc2007, winoground)
 
+from open_clip_train.data import decode_video, _resolve_video_preprocess
 
 def build_dataset(dataset_name, root="root", transform=None, split="test", download=True, annotation_file=None, language="en", task="zeroshot_classification", wds_cache_dir=None, custom_classname_file=None, custom_template_file=None, **kwargs):
     """
@@ -770,25 +771,6 @@ def get_transform_image_size(transform):
 
     return crop_size or resize_size or generic_size or (224, 224)
 
-
-def decode_video(
-    key, data, image_size=(224, 224)
-):
-    from torchcodec.decoders import VideoDecoder
-    import re
-    extension = re.sub(r".*[.]", "", key)
-    if extension not in VIDEO_EXTENSIONS:
-        return None
-    num_frames = 8
-    decoder = VideoDecoder(data, seek_mode="approximate", num_ffmpeg_threads=64)
-    end_frame = len(decoder)
-    indices = torch.linspace(0, end_frame - 1, steps=num_frames, dtype=int).tolist()
-    video  = decoder.get_frames_at(indices).data
-    video = video.permute(1, 0, 2, 3)  # Change to [C, num_frames, H, W]
-    video_tensor = F.interpolate(video, size=image_size, mode='bilinear', align_corners=False)
-    video_tensor = (video_tensor / 255.0 - 0.5) / 0.5  # Assuming the input is in [0, 255] range
-    return video_tensor
-
 def no_op(x):
     return x
 
@@ -865,7 +847,8 @@ def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", ca
     img_extensions = ["webp", "png", "jpg", "jpeg"]
     video_extensions = VIDEO_EXTENSIONS
     if dataset_type in ("video_classification", "video_retrieval"):
-        video_decode = partial(decode_video, image_size=get_transform_image_size(transform))
+        image_size, mean, std = _resolve_video_preprocess(transform)
+        video_decode = partial(decode_video, image_size=image_size, mean=mean, std=std)
         dataset = dataset.decode(video_decode, handler=warn_and_continue)
         transform = no_op  # No-op transform since decoding already done
     else:
