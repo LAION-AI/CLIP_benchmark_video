@@ -18,7 +18,7 @@ from . import (babel_imagenet, caltech101, flickr, imagenetv2, objectnet,
 
 from open_clip_train.data import decode_video, _resolve_video_preprocess
 
-def build_dataset(dataset_name, root="root", transform=None, split="test", download=True, annotation_file=None, language="en", task="zeroshot_classification", wds_cache_dir=None, custom_classname_file=None, custom_template_file=None, **kwargs):
+def build_dataset(dataset_name, root="root", transform=None, split="test", download=True, annotation_file=None, language="en", task="zeroshot_classification", wds_cache_dir=None, custom_classname_file=None, custom_template_file=None, force_use_transform=False, **kwargs):
     """
     Main function to use in order to build a dataset instance,
 
@@ -472,7 +472,7 @@ def build_dataset(dataset_name, root="root", transform=None, split="test", downl
     elif dataset_name.startswith("wds/"):
         # WebDataset support using `webdataset` library
         name = dataset_name.split("/", 1)[1]
-        ds = build_wds_dataset(name, transform=transform, split=split, data_dir=root, cache_dir=wds_cache_dir)
+        ds = build_wds_dataset(name, transform=transform, split=split, data_dir=root, cache_dir=wds_cache_dir, force_use_transform=force_use_transform)
         # WDS specify classnames and templates on its own.
     elif dataset_name == "dummy":
         ds = Dummy()
@@ -774,7 +774,7 @@ def get_transform_image_size(transform):
 def no_op(x):
     return x
 
-def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", cache_dir=None):
+def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", cache_dir=None, force_use_transform=False):
     """
     Load a dataset in WebDataset format. Either local paths or HTTP URLs can be specified.
     Expected file structure is:
@@ -847,10 +847,13 @@ def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", ca
     img_extensions = ["webp", "png", "jpg", "jpeg"]
     video_extensions = VIDEO_EXTENSIONS
     if dataset_type in ("video_classification", "video_retrieval"):
-        image_size, mean, std = _resolve_video_preprocess(transform)
-        video_decode = partial(decode_video, image_size=image_size, mean=mean, std=std)
+        if force_use_transform:
+            video_decode = partial(decode_video, transform=transform)
+        else:
+            image_size, mean, std = _resolve_video_preprocess(transform)
+            video_decode = partial(decode_video, image_size=image_size, mean=mean, std=std)
         dataset = dataset.decode(video_decode, handler=warn_and_continue)
-        transform = no_op  # No-op transform since decoding already done
+        transform = no_op  # No-op transform since decoding already done by `decode_video`
     else:
         dataset = dataset.decode(wds.autodecode.ImageHandler("pil", extensions=img_extensions), handler=warn_and_continue)
     
