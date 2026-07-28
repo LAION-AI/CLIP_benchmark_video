@@ -42,6 +42,13 @@ def get_parser_args():
     parser_eval.add_argument('--no_amp', action="store_false", dest="amp", default=True, help="whether to use mixed precision")
     parser_eval.add_argument('--num_workers', default=4, type=int)
     parser_eval.add_argument('--recall_k', default=[5], type=int, help="for retrieval, select the k for Recall@K metric. ", nargs="+",)
+    parser_eval.add_argument(
+        '--retrieval_query_ids',
+        '--retrieval-query-ids',
+        default=None,
+        type=str,
+        help="optional file containing one retrieval query sample ID per line; WebDatasets use __key__ values and regular datasets use zero-based indices",
+    )
     parser_eval.add_argument('--fewshot_k', default=-1, type=int, help="for linear probe, how many shots. -1 = whole dataset.")
     parser_eval.add_argument('--fewshot_epochs', default=10, type=int, help="for linear probe, how many epochs.")
     parser_eval.add_argument('--fewshot_lr', default=0.1, type=float, help="for linear probe, what is the learning rate.")
@@ -209,6 +216,16 @@ def _single_option_to_multiple_datasets(cur_option, datasets, name):
     else:
         return cur_option
 
+
+def _load_retrieval_query_ids(path):
+    if path is None:
+        return None
+    with open(path, encoding="utf-8") as query_id_file:
+        query_ids = [line.strip() for line in query_id_file if line.strip()]
+    if not query_ids:
+        raise ValueError(f"Retrieval query ID file is empty: {path}")
+    return query_ids
+
 def run(args):
     """Console script for clip_benchmark."""
     if torch.cuda.is_available():
@@ -290,6 +307,7 @@ def run(args):
             custom_classname_file=args.custom_classname_file,
             wds_cache_dir=args.wds_cache_dir,
             force_use_transform=args.force_use_transform,
+            include_sample_id=bool(getattr(args, "retrieval_query_ids", None)),
         )
         collate_fn = get_dataset_collate_fn(args.dataset)
         if args.verbose:
@@ -334,13 +352,17 @@ def run(args):
             load_clfs=args.load_clfs,
         ) 
     elif task in ("zeroshot_retrieval", "video_retrieval"):
+        query_ids = _load_retrieval_query_ids(
+            getattr(args, "retrieval_query_ids", None)
+        )
         metrics = zeroshot_retrieval.evaluate(
             model, 
             dataloader, 
             tokenizer, 
             recall_k_list=args.recall_k,
             device=args.device, 
-            amp=args.amp
+            amp=args.amp,
+            query_ids=query_ids,
         )
     elif task == "image_caption_selection":
         metrics = image_caption_selection.evaluate(
