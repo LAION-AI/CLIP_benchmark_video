@@ -19,7 +19,7 @@ from clip_benchmark.metrics import (captioning, image_caption_selection,
                                     zeroshot_retrieval)
 from clip_benchmark.model_collection import (get_model_collection_from_file,
                                              model_collection)
-from clip_benchmark.models import MODEL_TYPES, load_clip
+from clip_benchmark.models import MODEL_TYPES, load_clip, merge_model_weights_
 
 
 def get_parser_args():
@@ -37,6 +37,8 @@ def get_parser_args():
     mutually_exclusive.add_argument('--val_proportion', default=None, type=float, nargs="+", help="what is the share of the train dataset will be used for validation part, if it doesn't predefined. Mutually exclusive with val_split")
     parser_eval.add_argument('--model', type=str, nargs="+", default=["ViT-B-32-quickgelu"], help="Model architecture to use from OpenCLIP")
     parser_eval.add_argument('--pretrained', type=str, nargs="+", default=["laion400m_e32"], help="Model checkpoint name to use from OpenCLIP")
+    parser_eval.add_argument('--wiseft-pretrained', '--wiseft_pretrained', default=None, type=str, help="additional checkpoint or OpenCLIP pretrained name to interpolate with the main --pretrained model before evaluation")
+    parser_eval.add_argument('--wiseft-coef', '--wiseft_coef', default=0.5, type=float, help="WiSE-FT interpolation coefficient: merged = (1 - coef) * pretrained + coef * wiseft_pretrained")
     parser_eval.add_argument('--pretrained_model', type=str, default="", nargs="+", help="Pre-trained model(s) to use. Can be the full model name where `model` and `pretrained` are comma separated (e.g., --pretrained_model='ViT-B-32-quickgelu,laion400m_e32'), a model collection name ('openai' or 'openclip_base' or 'openclip_multilingual' or 'openclip_all'), or path of a text file where each line is a model fullname where model and pretrained are comma separated (e.g., ViT-B-32-quickgelu,laion400m_e32). --model and --pretrained are ignored if --pretrained_model is used.")
     parser_eval.add_argument('--task', type=str, default="auto", choices=["zeroshot_classification", "zeroshot_retrieval", "linear_probe", "captioning", "image_caption_selection", "auto"], help="Task to evaluate on. With --task=auto, the task is automatically inferred from the dataset.")
     parser_eval.add_argument('--no_amp', action="store_false", dest="amp", default=True, help="whether to use mixed precision")
@@ -66,7 +68,7 @@ def get_parser_args():
     parser_eval.add_argument('--dump_templates', default=False, action="store_true", help="dump templates to the results json file.")
 
     parser_eval.add_argument('--language', default="en", type=str, nargs="+", help="language(s) of classname and prompts to use for zeroshot classification.")
-    parser_eval.add_argument('--output', default="{dataset}_{pretrained}_{model}_{language}_{task}.json", type=str, help="output file where to dump the metrics. Can be in form of a template, e.g., --output='{dataset}_{pretrained}_{model}_{language}_{task}.json'")
+    parser_eval.add_argument('--output', default="{dataset}_{pretrained}{wiseft_suffix}_{model}_{language}_{task}.json", type=str, help="output file where to dump the metrics. Can be in form of a template, e.g., --output='{dataset}_{pretrained}{wiseft_suffix}_{model}_{language}_{task}.json'. WiSE-FT runs also expose {wiseft_pretrained} and {wiseft_coef}.")
     parser_eval.add_argument('--quiet', dest='verbose', action="store_false", help="suppress verbose messages")
     parser_eval.add_argument('--save_clf', default=None, type=str, help="optionally save the classification layer output by the text tower")
     parser_eval.add_argument('--load_clfs', nargs='+', default=[], type=str, help="optionally load and average mutliple layers output by text towers.")
@@ -257,6 +259,18 @@ def run(args):
         dataset_root = args.dataset_root.format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
     pretrained_slug = os.path.basename(args.pretrained) if os.path.isfile(args.pretrained) else args.pretrained
     pretrained_slug_full_path = args.pretrained.replace('/', '_') if os.path.isfile(args.pretrained) else args.pretrained
+    wiseft_pretrained = getattr(args, "wiseft_pretrained", None)
+    wiseft_coef = getattr(args, "wiseft_coef", 0.5)
+    wiseft_slug = ""
+    if wiseft_pretrained:
+        wiseft_slug = (
+            os.path.basename(wiseft_pretrained)
+            if os.path.isfile(wiseft_pretrained)
+            else wiseft_pretrained.replace("/", "_")
+        )
+    wiseft_suffix = (
+        f"_wiseft-{wiseft_slug}-{wiseft_coef:g}" if wiseft_pretrained else ""
+    )
     dataset_slug = dataset_name.replace('/', '_')
     if args.model == "auto":
         for line in open(os.path.join(os.path.dirname(args.pretrained), "..", "out.log")):
@@ -268,6 +282,9 @@ def run(args):
         pretrained=pretrained_slug,
         pretrained_full_path=pretrained_slug_full_path,
         pretrained_folder=os.path.dirname(args.pretrained),
+        wiseft_pretrained=wiseft_slug,
+        wiseft_coef=wiseft_coef,
+        wiseft_suffix=wiseft_suffix,
         task=task, 
         dataset=dataset_slug,
         language=args.language
@@ -277,7 +294,13 @@ def run(args):
             print(f"Skip {output}, exists already.")
         return
     if args.verbose:
-        print(f"Running '{task}' on '{dataset_name}' with the model '{args.pretrained}' on language '{args.language}'")
+        model_description = args.pretrained
+        if wiseft_pretrained:
+            model_description += (
+                f" WiSE-FT merged with '{wiseft_pretrained}' "
+                f"(coef={wiseft_coef:g})"
+            )
+        print(f"Running '{task}' on '{dataset_name}' with the model '{model_description}' on language '{args.language}'")
     if args.skip_load:
         model, transform, collate_fn, dataloader = None, None, None, None
     else:
@@ -288,6 +311,16 @@ def run(args):
             cache_dir=args.model_cache_dir,
             device=args.device
         )
+        if wiseft_pretrained:
+            wiseft_model, _, _ = load_clip(
+                model_type=args.model_type,
+                model_name=args.model,
+                pretrained=wiseft_pretrained,
+                cache_dir=args.model_cache_dir,
+                device="cpu",
+            )
+            merge_model_weights_(model, wiseft_model, coef=wiseft_coef)
+            del wiseft_model
         model.eval()
         if args.model.count("nllb-clip") > 0:
             # for NLLB-CLIP models, we need to set the language prior to running the tests
@@ -448,6 +481,9 @@ def run(args):
         "metrics": metrics,
         "language": args.language,
     }
+    if wiseft_pretrained:
+        dump["wiseft_pretrained"] = wiseft_pretrained
+        dump["wiseft_coef"] = wiseft_coef
     if hasattr(dataset, "classes") and dataset.classes and args.dump_classnames:
         dump["classnames"] = dataset.classes
     if hasattr(dataset, "templates") and dataset.templates and args.dump_templates:

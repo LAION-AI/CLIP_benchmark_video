@@ -777,6 +777,10 @@ def get_transform_image_size(transform):
 def no_op(x):
     return x
 
+def no_op_splitter(src):
+    """Leave the shard stream intact across independent evaluation processes."""
+    yield from src
+
 def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", cache_dir=None, force_use_transform=False, include_sample_id=False):
     """
     Load a dataset in WebDataset format. Either local paths or HTTP URLs can be specified.
@@ -846,7 +850,18 @@ def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", ca
     if not cache_dir or not isinstance(cache_dir, str):
         cache_dir = None
     
-    dataset = wds.WebDataset(filepattern, cache_dir=cache_dir, nodesplitter=wds.split_by_worker, empty_check=False)
+    # Each CLI process runs an independent evaluation and must see every shard.
+    # All supported WebDataset versions apply split_by_worker internally, so
+    # using it as the nodesplitter as well would split the shard stream twice
+    # and make the evaluated subset depend on num_workers. A top-level no-op
+    # splitter is used instead of None for compatibility with WebDataset 0.2.x.
+    dataset = wds.WebDataset(
+        filepattern,
+        cache_dir=cache_dir,
+        nodesplitter=no_op_splitter,
+        shardshuffle=False,
+        empty_check=False,
+    )
     img_extensions = ["webp", "png", "jpg", "jpeg"]
     video_extensions = VIDEO_EXTENSIONS
     if dataset_type in ("video_classification", "video_retrieval"):
