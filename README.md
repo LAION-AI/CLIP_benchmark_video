@@ -188,6 +188,28 @@ For other datasets that have an official val split, one can also specify the val
 
 `clip_benchmark eval --dataset=fgvc_aircraft --task=linear_probe --pretrained=laion400m_e32 --model=ViT-B-32-quickgelu --output=result.json --batch_size=64 --fewshot_lr 0.1 --fewshot_epochs 20 --batch_size 512 --train_split train --val_split val --test_split test`
 
+### WiSE-FT checkpoint interpolation
+
+Use `--wiseft-pretrained` to merge an additional checkpoint with the main
+model selected by `--pretrained` before evaluation. The interpolation is
+`(1 - coef) * pretrained + coef * wiseft_pretrained`, where
+`--wiseft-coef` defaults to `0.5`.
+
+```bash
+clip_benchmark eval \
+  --dataset=imagenet1k \
+  --model=ViT-B-32 \
+  --pretrained=/path/to/main-trained-checkpoint.pt \
+  --wiseft-pretrained=datacomp_xl_s13b_b90k \
+  --wiseft-coef=0.5
+```
+
+Both checkpoints must use the same model architecture. Merged runs include
+the WiSE-FT checkpoint and coefficient in the default output filename and in
+the result JSON. For ViCLIP, parameters inherited from the base image-text
+model are interpolated, while video-only temporal positional embeddings are
+kept unchanged from the main `--pretrained` model.
+
 ### Multilingual evaluation
 
 We also provide datasets for evaluating multilingual models (see e.g. https://github.com/mlfoundations/open_clip#vit-b32-xlm-roberta-base, and https://github.com/mlfoundations/open_clip/blob/main/docs/openclip_multilingual_retrieval_results.csv) by specifying `--language`.
